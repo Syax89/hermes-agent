@@ -562,6 +562,10 @@ class PhotonAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
 
+    # iMessage tapbacks via the sidecar's /react endpoint; add_reaction /
+    # remove_reaction already implement the unified base contract below.
+    SUPPORTS_REACTIONS = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
         extra = config.extra or {}
