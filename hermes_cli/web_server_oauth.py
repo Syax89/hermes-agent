@@ -40,9 +40,50 @@ def _token_status(source: str, source_label: str, creds: dict[str, Any]) -> dict
     }
 
 
+def _pooled_anthropic_status() -> dict[str, Any] | None:
+    """Connected status from the first usable pooled ``anthropic`` credential, else ``None``.
+
+    ``hermes auth add anthropic`` (and the desktop sign-in that shares it) writes the PKCE grant
+    into the credential pool in ``auth.json``; reading only the legacy single-token file made
+    those logins render as disconnected in the Accounts view while the CLI reported them fine.
+
+    ``claude_code`` rows are skipped (they mirror ``~/.claude`` and belong to the ``claude-code``
+    entry), and so is a row whose access token has expired with no refresh token: the pool
+    refreshes an expired access token that still has a refresh token, so that one stays connected.
+    """
+    try:
+        from hermes_cli.auth import read_credential_pool
+        entries = read_credential_pool("anthropic")
+    except Exception:  # health: allow BLE001 -- a locked/broken auth store must degrade to the env rung, never 500 the card
+        _log.debug("anthropic credential-pool status probe failed", exc_info=True)
+        return None
+    for entry in entries or []:
+        if not isinstance(entry, dict) or "claude_code" in str(entry.get("source") or ""):
+            continue
+        token = entry.get("access_token") or entry.get("api_key")
+        if not token:
+            continue
+        expires_at_ms = entry.get("expires_at_ms")
+        refresh_token = entry.get("refresh_token")
+        if isinstance(expires_at_ms, (int, float)) and expires_at_ms <= time.time() * 1000 and not refresh_token:
+            continue
+        label = entry.get("label") or entry.get("source") or "credential pool"
+        return {
+            "logged_in": True,
+            "source": "credential_pool",
+            "source_label": f"Credential pool ({label})",
+            "token_preview": _truncate_token(token),
+            # Milliseconds, like every other builder here: the card does ``new Date(expires_at)``.
+            "expires_at": expires_at_ms if isinstance(expires_at_ms, (int, float)) else None,
+            "has_refresh_token": bool(refresh_token),
+        }
+    return None
+
+
 def _anthropic_oauth_status() -> dict[str, Any]:
     """Status for the "Anthropic Account" card: Hermes-managed PKCE file first, then the
-    registry-ordered env vars (process env — where Bitwarden-sourced secrets land — then .env).
+    pooled credential store, then the registry-ordered env vars (process env — where
+    Bitwarden-sourced secrets land — then .env).
 
     Claude Code's ``~/.claude/.credentials.json`` is deliberately NOT read here; it has its own
     ``claude-code`` entry, and counting it here would shadow a real ANTHROPIC_API_KEY.
@@ -54,6 +95,12 @@ def _anthropic_oauth_status() -> dict[str, Any]:
         hermes_creds = None
     if hermes_creds and hermes_creds.get("accessToken"):
         return _token_status("hermes_pkce", f"Hermes PKCE ({_get_hermes_oauth_file()})", hermes_creds)
+
+    # ``hermes auth add anthropic`` stores the PKCE grant as a pooled credential rather than in
+    # the legacy single-token file, so a pool-only login must still read as connected here.
+    pooled = _pooled_anthropic_status()
+    if pooled is not None:
+        return pooled
 
     env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     try:
